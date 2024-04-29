@@ -20,7 +20,6 @@ from googletrans import Translator
 
 #глобальная переменная для вычисления общей опасности страницы
 DANGER = 0
-access_token = 'vk1.a.juyMBPf3DO1az9G39_7BMIDSEtKs-wNnZ-ec5nX_k3JOQLZiMWH6-CrKgvytlIHHrvEdolVqnEt8GyIgTvs90iy6cMLcqunL1LWTipwfxjTY4KtLy_89YImnl9iBP5juLfcDi7Gcfn08HfD7m0tBWvjC2mp-5ydHPn2E-UFKvSm0ND-hSCtd6qjPn0l-m5u6V0lVEeegvMlOqIq7TfMerA'
 
 
 #функция для загрузки файла
