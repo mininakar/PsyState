@@ -40,42 +40,23 @@ import inspect
 from pymorphy2 import MorphAnalyzer
 
 
-# if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-#     bundle_dir = Path(sys._MEIPASS)
-#     bundle_dir = Path(sys._MEIPASS)
-# if hasattr(sys, '_MEIPASS'):
-#     pymorphy3_dicts_path = os.path.join(sys._MEIPASS, 'pymorphy3_dicts')
-
-if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-    bundle_dir = Path(sys._MEIPASS)
-    bundle_dir = Path(sys._MEIPASS)
-if hasattr(sys, '_MEIPASS'):
-    pymorphy2_dicts_path = os.path.join(sys._MEIPASS, 'pymorphy2_dicts')
-#глобальная переменная для вычисления общей опасности страницы
-global DANGER
-DANGER = 0
-
-
-#функция для загрузки файла
 def load_word_list(file_path):
     with open(file_path, 'r', encoding='utf-8') as file:
         word_list = [word.strip() for word in file.readlines()]
     return word_list
-
 # функция для удаления  \n
 def remove_newlines_from_posts(filename):
     with open(filename, 'r', encoding='utf-8') as file:
         data = json.load(file)
-
     # Обходим каждый пост и удаляем символы новой строки из текста
-    for post in data:
+    for i, post in enumerate(data):
         if isinstance(post, str):
             post_without_newlines = post.replace('\n', ' ')  # Удаляем символы новой строки
-            data[data.index(post)] = post_without_newlines  # Заменяем оригинальный текст поста на очищенный
-        # Записываем очищенные данные обратно в файл
+            #post_without_newlines.replce('\\', '')
+            data[i] = post_without_newlines  # Заменяем оригинальный текст поста на очищенный
+    # Записываем очищенные данные обратно в файл
     with open(filename, 'w', encoding='utf-8') as file:
         json.dump(data, file, ensure_ascii=False, indent=4)
-
 #функция для очистки json
 def clean_json(filename):
     with open(filename, 'r', encoding='utf-8') as file:
@@ -85,7 +66,6 @@ def clean_json(filename):
     # Записываем очищенные данные обратно в файл
     with open(filename, 'w', encoding='utf-8') as file:
         json.dump(cleaned_data, file, ensure_ascii=False, indent=4)
-
 #функция для определения активности на странице
 def get_posts_activity(access_token, user_id):
     vk_session = vk_api.VkApi(token=access_token)
@@ -124,155 +104,227 @@ def get_posts_activity(access_token, user_id):
 
     # Возвращаем результаты анализа
     return post_hours_counter
-def get_avatar_comments_count(vk, user_name):
-    user_info = vk.users.get(user_ids=user_name, fields='photo_max_orig')[0]
-    user_id = user_info['id']
+#функция для получения постов со стены
+def get_posts(user_id, access_token, count_per_request=100, total_count=1000):
+    all_posts = []
+    offset = 0
+    while offset < total_count:
+        params = {
+            'owner_id': user_id,
+            'filter': 'all',
+            'count': count_per_request,
+            'offset': offset,
+            'access_token': access_token,
+            'v': '5.131'
+        }
+        response = requests.get('https://api.vk.com/method/wall.get', params=params)
+        posts = response.json().get('response', {}).get('items', [])
+        all_posts.extend(posts)
+        if not posts:
+            break
+        offset += count_per_request
+    return all_posts
+def get_post_info(post):
+    repost_info = post['copy_history'][0]
+    repost_owner_name = ''
 
-    # Получение информации о фотографиях профиля пользователя
-    photos = vk.photos.get(owner_id=user_id, album_id='profile', rev=1)
+    if 'from_id' in repost_info:
+        repost_owner_id = repost_info['from_id']
+        if repost_owner_id > 0:  # пользователь
+            repost_owner_info = get_user_info(repost_owner_id)
+            first_name = repost_owner_info.get('first_name', 'Unknown')
+            last_name = repost_owner_info.get('last_name', 'Unknown')
+            repost_owner_name = f"{first_name} {last_name}"
+        else:  # группа
+            repost_owner_id = abs(repost_owner_id)
+            repost_owner_name = get_group_name(repost_owner_id)
 
-    # Выбор основной фотографии профиля (первая фотография)
-    if photos['count'] > 0:
-        main_photo = photos['items'][0]
-        photo_id = main_photo['id']
-        owner_id = main_photo['owner_id']
+    repost_text = repost_info.get('text', '')
 
-        # Получение комментариев к основной фотографии профиля
-        avatar_comments_info = vk.photos.getComments(owner_id=owner_id, photo_id=photo_id, count=100)
+    return repost_owner_name, repost_text
+def get_user_info(user_id):
+    params = {
+        'user_ids': user_id,
+        'fields': 'first_name,last_name',
+        'v': '5.131'
+    }
+    response = requests.get('https://api.vk.com/method/users.get', params=params)
+    user_info = response.json().get('response', [{}])[0]
+    return user_info
+def get_group_name(group_id):
+    params = {
+        'group_id': group_id,
+        'fields': 'name',
+        'v': '5.131'
+    }
+    response = requests.get('https://api.vk.com/method/groups.getById', params=params)
+    group_info = response.json().get('response', [{}])[0]
+    group_name = group_info.get('name')
 
-        # Подсчет количества комментариев
-        comments_count = avatar_comments_info['count']
-        if comments_count>0:
-            print('Человек социально активный')
-        else:
-            print('Человек не активный')
-        return comments_count
+    if group_name:
+        return group_name
+def is_grayscale(image):
+    return image.mode == 'L'
+def is_default_vk_image(image):
+    return image.width == 400 and image.height == 400
+def get_image_color_palette(image_url):
+    response = requests.get(image_url)
+    image = Image.open(BytesIO(response.content))
+
+    # Проверяем, является ли изображение используемым VK для отсутствующих изображений
+    if is_default_vk_image(image):
+        return None, 'Изображение отсутствует'
+
+    if is_grayscale(image):
+        # Return the grayscale image and type
+        return image, 'Grayscale'
     else:
-        return 0
-#tokenizer = MorphTokenizer()
-
-
-#morph = pymorphy3.MorphAnalyzer()
-#morph = PymorphyAnalyzer()
+        # Return the original color image and type
+        return image, 'Color'
 
 class OutputWindow(QWidget):
-    def __init__(self, main_window):
+    def __init__(self,main_window):
         super().__init__()
+        #self.initUI()
         self.setWindowTitle("Данные пользователя")
-        self.setGeometry(100, 100, 600, 600)
-        self.setStyleSheet("background-color: #FFFFFF;")
+        self.setGeometry(100, 100, 800, 600)
+        self.setWindowIcon(QIcon('D:\Учеба\patent\icon.ico'))
+        self.setBackgroundColor(QColor(243, 247, 236))
 
         self.layout = QVBoxLayout()
 
         self.name_label = QLabel("Имя: ")
+        self.name_label.setStyleSheet(
+            "QLabel { font-size: 17px;font-weight: bold; }")
+        self.layout.addWidget(self.name_label)
+
         self.last_name_label = QLabel("Фамилия: ")
+        self.last_name_label.setStyleSheet(
+            "QLabel { font-size: 17px; font-weight: bold;}")
+        self.layout.addWidget(self.last_name_label)
+
 
         self.image_label = QLabel()
         self.matching_groups_label = QLabel()
 
-        self.layout.addWidget(self.name_label)
-        self.layout.addWidget(self.last_name_label)
+    # Горизонтальная компоновка для текста и изображения
+    #     self.text_and_image_layout = QHBoxLayout()
+    #     self.text_and_image_layout.addWidget(self.name_label)
+    #     self.text_and_image_layout.addWidget(self.last_name_label)
+    #     self.text_and_image_layout.addWidget(self.image_label)
 
-        self.status = QLabel("Статус: ")
-        self.layout.addWidget(self.status)
-
-        self.status_analyze = QLabel(" ")
-        self.layout.addWidget(self.status_analyze)
-
-        self.img_label = QLabel("")
-        self.layout.addWidget(self.img_label)
-
-        self.layout.addWidget(self.image_label)
+        #self.layout.addLayout(self.text_and_image_layout)
         self.layout.addWidget(self.matching_groups_label)
+        self.matching_groups_label.setStyleSheet(
+        "QLabel { font-size: 16px; }")
 
         self.info_label = QLabel("Идет сохранение постов в файл...")
         self.layout.addWidget(self.info_label)
-
-
-        # self.emot_label = QLabel("Эмоции:")
-        # self.layout.addWidget(self.emot_label)
+        self.info_label.setStyleSheet(
+        "QLabel { font-size: 16px; }")
 
         self.emot_label1 = QLabel("Идет определение эмоций по странице...")
         self.layout.addWidget(self.emot_label1)
+        self.emot_label1.setStyleSheet(
+        "QLabel { font-size: 16px; }")
 
         self.words_label = QLabel("")
         self.layout.addWidget(self.words_label)
-        # self.analyze_thread = threading.Thread(target=self.analyze_user_posts, args=(user_id,))
-        # self.analyze_thread.start()
-
-        # self.progress_bar = QProgressBar()
-        # self.layout.addWidget(self.progress_bar)
-
+        self.words_label.setStyleSheet(
+        "QLabel { font-size: 16px; }")
 
         self.max_hour_value = QLabel('')
         self.layout.addWidget(self.max_hour_value)
+        self.max_hour_value.setStyleSheet(
+        "QLabel { font-size: 16px; }")
 
         self.insomnia_posts = QLabel('')
         self.layout.addWidget(self.insomnia_posts)
+        self.insomnia_posts.setStyleSheet(
+        "QLabel { font-size: 16px; }")
 
-        self.result = QLabel("")
-        self.layout.addWidget(self.result)
-        self.result.setStyleSheet(
-            "QLabel { font-size: 20px; color: #C40C0C;  }")
+        self.justtext = QLabel("Вывод по странице:")
+        self.layout.addWidget(self.justtext)
+        self.justtext.setStyleSheet(
+        "QLabel { font-size: 24px; color: #000000;  }")
+
+    # self.result = QLabel("")
+    # self.layout.addWidget(self.result)
+    # self.result.setStyleSheet(
+    #     "QLabel { font-size: 18px;  }")
+
+        self.analyze = QLabel("")
+        self.layout.addWidget(self.analyze)
+        self.analyze.setStyleSheet(
+        "QLabel { font-size: 18px; }")
 
         self.back_button = QPushButton("Назад")
         self.back_button.setGeometry(QtCore.QRect(600, 480, 191, 61))
         self.back_button.setObjectName("pushButton")
         self.back_button.setStyleSheet(pushButton_StyleSheet)
-        # self.back_button.setStyleSheet(
-        #     "font-size: 18px; padding: 10px 20px; background-color: #4CAF50; color: white; border: none; border-radius: 5px;")
+    # self.back_button.setStyleSheet(pushButton_StyleSheet)
+
         self.back_button.clicked.connect(self.close)
         self.back_button.clicked.connect(main_window.show)
         self.layout.addWidget(self.back_button)
         self.setLayout(self.layout)
 
+    def setBackgroundColor(self, color):
+        # Создаем палитру и устанавливаем цвет фона
+        palette = self.palette()
+        palette.setColor(QPalette.Window, color)
+        self.setPalette(palette)
     def reset(self):
-        # Сброс всех меток на начальные значения
+    # Сброс всех меток на начальные значения
         self.info_label.setText("Идет сохранение постов в файл...")
         self.emot_label1.setText("Идет определение эмоций по странице...")
+        self.insomnia_posts.setText("")
         self.words_label.setText("")
+    # self.result = QLabel("")
+    # self.analyze = QLabel("")
+
 
     def set_label_text(self, text):
         self.info_label.setText(text)
 
-    def set_img_label(self, text):
-        self.img_label.setText(text)
 
-    def emot_label (self, text):
+    def set_img_label(self, text):
+        self.image_label.setText(text)
+
+
+    def emot_label(self, text):
         self.emot_label.setText(text)
 
+
     def set_emot_label_text(self, text):
-        self.emot_label1.setText(text)  # Update the text of emot_label1
+        self.emot_label1.setText(text)
 
-    def set_status_analyze_text(self, text):
-        self.status_analyze.setText(text)
-
-    def set_result(self, text):
-        self.result.setText(text)
-
+    def set_analyze(self, text):
+        self.analyze.setText(text)
     def set_max_hour_value(self, text):
         self.max_hour_value.setText(text)
-
     def set_insomnia_posts(self, text):
         self.insomnia_posts.setText(text)
-
     def set_words_label_text(self, text):
         self.words_label.setText(text)
+        self.words_label.setText(text)
+    def initUI(self):
+        self.setWindowTitle('Output')
+        self.setGeometry(200, 200, 400, 300)
+        self.name_label = QLabel('Имя: ')
+        self.last_name_label = QLabel('Фамилия: ')
+        self.matching_groups_label = QLabel(' ')
 
-    def display_user_info(self, first_name, last_name,status, image_url, matching_groups_count):
+        layout = QVBoxLayout()
+        layout.addWidget(self.name_label)
+        layout.addWidget(self.last_name_label)
+        layout.addWidget(self.matching_groups_label)
+        self.setLayout(layout)
+
+    def display_user_info(self, first_name, last_name, matching_groups_count):
         self.name_label.setText(f"Имя: {first_name}")
         self.last_name_label.setText(f"Фамилия: {last_name}")
-
-        self.status.setText(f"Статус: {status}")
-        #self.img_label.setText(f"ССылка: {image_url}")
-
-        if image_url:
-            pixmap = QPixmap()
-            pixmap.loadFromData(requests.get(image_url).content)
-            self.image_label.setPixmap(pixmap)
-            self.image_label.setAlignment(Qt.AlignCenter)
-
-        self.matching_groups_label.setText(f"Количество групп, содержащих слова из файла groups.txt: {matching_groups_count}")
+        self.matching_groups_label.setText(f"Количество групп, содержащих слова из файла groups.txt: <b>{matching_groups_count}</b>")
 
 pushButton_StyleSheet ='''
 #pushButton {
@@ -285,275 +337,225 @@ pushButton_StyleSheet ='''
   border-radius: 15px;
 
 }
-
 #pushButton:hover {background-color: #4483e4;}
 
 #pushButton:pressed {
   background-color: #686c73;
-
 }
 '''
 
-def is_grayscale(image):
-    return image.mode == 'L'
-
-def get_image_color_palette(image_url):
-
-    response = requests.get(image_url)
-    image = Image.open(BytesIO(response.content))
-
-    if is_grayscale(image):
-        # Return the grayscale image and type
-        return image, 'Grayscale'
-    else:
-        # Return the original color image and type
-        return image, 'Color'
-
-class MainWindow(QWidget):
+class SignUpApp(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Главное окно")
-        self.setGeometry(100, 100, 600, 600)
+        #self.output_window = OutputWindow()
+        self.initUI()
 
-        self.label = QLabel("Введите id пользователя:")
-        self.label.setStyleSheet("font-size: 24px; color: #333;")
+    def initUI(self):
+        mainLayout = QHBoxLayout()
+        mainLayout.setContentsMargins(0, 0, 0, 0)  # Remove padding
+        mainLayout.setSpacing(0)  # Remove spacing
+
+        leftPanel = QWidget()
+        leftPanel.setAutoFillBackground(True)
+        palette = leftPanel.palette()
+        palette.setColor(QPalette.Window, QColor(131, 180, 255))
+        leftPanel.setPalette(palette)
+
+        leftPanelLayout = QVBoxLayout()
+        leftPanelLayout.setContentsMargins(0, 0, 0, 0)  # Remove padding
+        leftPanelLayout.setSpacing(10)  # Set spacing between widgets
+
+        signUpLabel = QLabel("PsyState")
+        signUpLabel.setStyleSheet("font-size: 32px; color: white; paddin-top: 30px;")
+        signUpLabel.setFont(QFont('Century Gothic', 32))
+        textLabel = QLabel("Приложение для оценки эмоционального состояния ползователя по его странице в ВКонтакте")
+        textLabel.setWordWrap(True)
+        textLabel.setStyleSheet("font-size: 20px; color: white; padding-top: 50px;")
+        textLabel.setFont(QFont('Century Gothic', 20))
+
+        leftPanelLayout.addWidget(signUpLabel)
+        leftPanelLayout.addWidget(textLabel)
+        leftPanelLayout.addStretch(1)
+        leftPanel.setLayout(leftPanelLayout)
+
+        rightPanel = QWidget()
+        rightPanel.setAutoFillBackground(True)  # Enable auto-fill background
+        rightPanelLayout = QVBoxLayout()
+        rightPanelLayout.setAlignment(Qt.AlignCenter)
+
+        # Setting the background color of the right panel
+        palette1 = rightPanel.palette()
+        palette1.setColor(QPalette.Window, QColor(243, 247, 236))
+        rightPanel.setPalette(palette1)
 
         self.input_field = QLineEdit()
-        self.input_field.setPlaceholderText('Введите id')
-        self.input_field.setStyleSheet("font-size: 20px; padding: 10px; border: 2px solid #4CAF50; border-radius: 5px;")
-        layout = QVBoxLayout()
+        self.input_field.setPlaceholderText('Enter ID here...')
+        self.input_field.setFont(QFont('Century Gothic', 14))
+        self.input_field.setStyleSheet("""
+            QLineEdit {
+                padding: 20px; 
+                border: none;
+                border-radius: 12px;
+                background-color: #393E46;
+                color: #EEEEEE;
+            }
+        """)
 
-        #Кнопка
-        self.submit_button = QPushButton("Вывести данные")
-        self.submit_button.setGeometry(QtCore.QRect(600, 480, 191, 61))
-        self.submit_button.setObjectName("pushButton")
-        self.submit_button.setStyleSheet(pushButton_StyleSheet)
-        self.submit_button.clicked.connect(self.open_output_window)
+        submitButton = QPushButton('Submit')
+        submitButton.setFont(QFont('Century Gothic', 12))
+        submitButton.clicked.connect(self.open_output_window)
+        submitButton.setStyleSheet("""
+            QPushButton {
+                background-color: #83B4FF;
+                color: white;
+                border: none;
+                padding: 10px 20px;
+                border-radius: 10px;
+            }
+            QPushButton:hover {
+                background-color: #5A72A0;
+            }
+        """)
 
+        formLayout = QFormLayout()
+        formLayout.addRow(self.input_field)
+        formLayout.addRow(submitButton)
 
-        self.layout = QVBoxLayout()
-        self.layout.addWidget(self.label)
-        self.layout.addWidget(self.input_field)
-        self.layout.addWidget(self.submit_button)
-        self.setLayout(self.layout)
+        rightPanelLayout.addStretch(1)
+        rightPanelLayout.addLayout(formLayout)
+        rightPanelLayout.addStretch(1)
+
+        rightPanel.setLayout(rightPanelLayout)
+
+        mainLayout.addWidget(leftPanel)
+        mainLayout.addWidget(rightPanel)
+        self.setLayout(mainLayout)
+        self.setWindowTitle("Sign Up Form")
+        self.setGeometry(100, 100, 800, 400)
 
         self.output_window = OutputWindow(self)
         self.input_field.returnPressed.connect(self.open_output_window)
 
-
-
     def open_output_window(self):
         user_id = self.input_field.text()
+        print(f"Submit clicked, user_id: {user_id}")  # Debug output
         user_info = self.fetch_user_info(user_id)
-        if user_info:
+        print(f"Fetched user info: {user_info}")  # Debug output
+        if user_info and 'response' in user_info and user_info['response']:
             matching_groups_count = self.fetch_user_groups(user_id)
-            self.output_window.display_user_info(user_info['response'][0]['first_name'],
-                                                 user_info['response'][0]['last_name'],
-                                                 user_info['response'][0]['status'],
-                                                 user_info['response'][0]['photo_max_orig'],
-                                                 matching_groups_count)
+            self.output_window.display_user_info(
+                user_info['response'][0]['first_name'],
+                user_info['response'][0]['last_name'],
+                matching_groups_count
+            )
             Thread(target=self.fetch_user_wall, args=(user_id,)).start()
-
             self.output_window.reset()  # Сброс состояния окна
             self.output_window.show()
         else:
-            print("Matching groups count is None")
-
+            print("User info not found.")
 
     def fetch_user_info(self, user_id):
-        global DANGER
-
+        print(f"Fetching user info for: {user_id}")  # Debug output
         params = {
             'user_ids': user_id,
-            'fields': 'photo_max_orig, first_name, last_name, status, about, activities, books, career, counters, country, interests, movies, personal, relatives, relation',
+            'fields': 'photo_max_orig,first_name,last_name,about,activities,books,career,counters,country,interests,movies,personal,relatives,relation',
             'access_token': access_token,
             'v': '5.131'
         }
         try:
             if not re.match(r'^[a-zA-Z0-9_]+$', user_id):
-                msg_box = QMessageBox()
-                msg_box.setWindowTitle('Ошибка')
-                msg_box.setIcon(QMessageBox.Warning)
-                msg_box.setStandardButtons(QMessageBox.Ok)
-
-
-                # Установка текста с новым стилем
-                msg_box.setText("<span style='font-size: 24px; color: #333;'>Некорректно введен id.</span>")
-
-                msg_box.setStyleSheet(
-                    "QPushButton {"
-                    "font-size: 20px;"
-                    "color: #fff;"
-                    "background-color: #78a4e8;"
-                    "border: none;"
-                    "border-radius: 7px;"
-                    "width: 75px;"
-                    "height: 30px;"
-                    "}"
-                    "QPushButton:hover {"
-                    "background-color: #4483e4;"
-                    "}"
-                    "QPushButton:pressed {"
-                    "background-color: #686c73;"
-                    "}"
-                )
-                msg_result = msg_box.exec_()
-
-                if msg_result == QMessageBox.Ok:
-                    # Закрыть текущее окно
-                    #self.close()
-                    # Создать и показать новое главное окно
-                    new_main_window = MainWindow()
-                    new_main_window.show()
-                    return
+                self.show_error_message("Некорректно введен id.")
+                return None
 
             response = requests.get('https://api.vk.com/method/users.get', params=params)
             user_info = response.json()
-            print (user_info)
-            if 'response' in user_info and user_info['response']==[]:
-                msg_box = QMessageBox()
-                msg_box.setWindowTitle('Ошибка')
-                msg_box.setIcon(QMessageBox.Warning)
-                msg_box.setText("<span style='font-size: 24px; color: #333;'>Такой страницы не существует.</span>")
-                msg_box.setStandardButtons(QMessageBox.Ok)
-                msg_box.setStyleSheet(
-                    "QPushButton {"
-                    "font-size: 20px;"
-                    "color: #fff;"
-                    "background-color: #78a4e8;"
-                    "border: none;"
-                    "border-radius: 7px;"
-                    "width: 75px;"
-                    "height: 30px;"
-                    "}"
-                    "QPushButton:hover {"
-                    "background-color: #4483e4;"
-                    "}"
-                    "QPushButton:pressed {"
-                    "background-color: #686c73;"
-                    "}"
-                )
-                msg_result = msg_box.exec_()
+            print('Мы зашли сюда', user_info)
 
-                if msg_result == QMessageBox.Ok:
-                    # Закрыть текущее окно
-                    # self.close()
-                    # Создать и показать новое главное окно
-                    new_main_window = MainWindow()
-                    new_main_window.show()
-                    return
+            if 'response' not in user_info or not user_info['response']:
+                self.show_error_message("Такой страницы не существует.")
+                return None
 
-            if 'response' in user_info and user_info['response']:
-                user_data = user_info['response'][0]
-                if 'deactivated' in user_data:
-                    msg_box = QMessageBox()
-                    msg_box.setWindowTitle('Ошибка')
-                    msg_box.setIcon(QMessageBox.Warning)
-                    msg_box.setText("<span style='font-size: 24px; color: #333;'>Страница забанена или удалена</span>")
-                    msg_box.setStandardButtons(QMessageBox.Ok)
-                    msg_box.setStyleSheet(
-                        "QPushButton {"
-                        "font-size: 20px;"
-                        "color: #fff;"
-                        "background-color: #78a4e8;"
-                        "border: none;"
-                        "border-radius: 7px;"
-                        "width: 75px;"
-                        "height: 30px;"
-                        "}"
-                        "QPushButton:hover {"
-                        "background-color: #4483e4;"
-                        "}"
-                        "QPushButton:pressed {"
-                        "background-color: #686c73;"
-                        "}"
-                    )
-                    msg_result = msg_box.exec_()
+            user_data = user_info['response'][0]
 
-                    if msg_result == QMessageBox.Ok:
-                        # Закрыть текущее окно
-                        # self.close()
-                        # Создать и показать новое главное окно
-                        new_main_window = MainWindow()
-                        new_main_window.show()
-                        return
+            if 'deactivated' in user_data:
+                self.show_error_message("Страница забанена или удалена")
+                return None
 
-                if 'is_closed' in user_data and user_data['is_closed']:
-                    msg_box = QMessageBox()
-                    msg_box.setWindowTitle('Ошибка')
-                    msg_box.setIcon(QMessageBox.Warning)
-                    msg_box.setText("<span style='font-size: 24px; color: #333;'>Страница закрыта</span>")
-                    msg_box.setStandardButtons(QMessageBox.Ok)
-                    msg_box.setStyleSheet(
-                        "QPushButton {"
-                        "font-size: 20px;"
-                        "color: #fff;"
-                        "background-color: #78a4e8;"
-                        "border: none;"
-                        "border-radius: 7px;"
-                        "width: 75px;"
-                        "height: 30px;"
-                        "}"
-                        "QPushButton:hover {"
-                        "background-color: #4483e4;"
-                        "}"
-                        "QPushButton:pressed {"
-                        "background-color: #686c73;"
-                        "}"
-                    )
-                    msg_result = msg_box.exec_()
+            if 'is_closed' in user_data and user_data['is_closed']:
+                self.show_error_message("Страница закрыта")
+                return None
 
-                    if msg_result == QMessageBox.Ok:
-                        # Закрыть текущее окно
-                        # self.close()
-                        # Создать и показать новое главное окно
-                        new_main_window = MainWindow()
-                        new_main_window.show()
-                        return
+            self.analyze_user_data(user_data)
 
-            if 'response' in user_info and user_info['response']:
-                user_data = user_info['response'][0]
-                if 'counters' in user_data:
-                    counters = user_data['counters']
-                    if 'friends' in counters:
-                        friends_count = counters['friends']
-                        if (friends_count < 10):
-                            DANGER = DANGER + 0.5
-                            print('друзья', DANGER)
-                        elif (friends_count > 1000):
-                            DANGER = DANGER + 0.2
-                            print('друзья', DANGER)
-                    if 'photos' in counters:
-                        photos_count = counters['photos']
-                        if (photos_count == 0):
-                            DANGER = DANGER + 0.5
-                            print('кол-во фото', DANGER)
-                if 'photo_max_orig' in user_data:
-                    image_url = user_data['photo_max_orig']
-                    print(image_url)
-                    #color_palette = get_image_color_palette(image_url)
-                    result_image, image_type = get_image_color_palette(image_url)
-                    if image_type == 'Grayscale':
-                        img_label = "Изображение ЧБ"
-                        #self.output_window.set_img_label(img_label)
-                        DANGER+=0.5
-                        print("Изображение ЧБ")
-                    else:
-                        img_label = " Изображение цветное"
-                        #self.output_window.set_img_label(img_label)
-                        print("Изображение цветное")
-                    #print (color_palette)
-                    print('фото', DANGER)
+            with open('user_info.json', 'w', encoding='utf-8') as f:
+                json.dump(user_info, f, ensure_ascii=False, indent=4)
 
-            print('итог', DANGER)
+            return user_info  # Убедитесь, что возвращаем данные после всех проверок
 
-            return user_info
         except Exception as e:
-            print("Ошибка при получении информации о пользователе:", e)
+            print("Exception occurred while fetching user info:", e)  # Debug output
             return None
 
+    def show_error_message(self, message):
+        msg_box = QMessageBox()
+        msg_box.setWindowTitle('Ошибка')
+        msg_box.setIcon(QMessageBox.Warning)
+        msg_box.setText(f"<span style='font-size: 24px; color: #333;'>{message}</span>")
+        msg_box.setStandardButtons(QMessageBox.Ok)
+        msg_box.setStyleSheet(
+            "QPushButton {"
+            "font-size: 20px;"
+            "color: #fff;"
+            "background-color: #78a4e8;"
+            "border: none;"
+            "border-radius: 7px;"
+            "width: 75px;"
+            "height: 30px;"
+            "}"
+            "QPushButton:hover {"
+            "background-color: #4483e4;"
+            "}"
+            "QPushButton:pressed {"
+            "background-color: #686c73;"
+            "}"
+        )
+        msg_box.exec_()
+
+    def analyze_user_data(self, user_data):
+        self.ANALYZE = ''
+        self.DANGER = 0
+        if 'counters' in user_data:
+            counters = user_data['counters']
+            if 'friends' in counters:
+                friends_count = counters['friends']
+                if friends_count < 10:
+                    self.DANGER += 1
+                    self.ANALYZE += 'У пользователя мало друзей, возможно, он асоциальный \n'
+                elif friends_count > 1000:
+                    self.DANGER += 1
+                    self.ANALYZE += 'У пользователя слишком много друзей, возможно, он пытается восполнить и коллекционирует друзей \n'
+            if 'photos' in counters:
+                photos_count = counters['photos']
+                if photos_count == 0:
+                    self.DANGER += 1
+                    self.ANALYZE += 'У пользователя нет изображений, это показывает, что человек скрытный \n'
+        if 'photo_max_orig' in user_data:
+            image_url = user_data['photo_max_orig']
+            result_image, image_type = get_image_color_palette(image_url)
+            if image_type == 'Grayscale':
+                img_label = "Изображение ЧБ"
+                self.output_window.set_img_label(img_label)
+                self.DANGER += 1
+                self.ANALYZE += 'ЧБ изображение пользователя показывает депрессивные эпизоды человека \n'
+            elif image_type == 'Изображение отсутствует':
+                self.DANGER += 1
+                self.ANALYZE += 'Отсутствие изображения показывает, что человек скрытный \n'
+                img_label = "Изображение отсутствует"
+                #self.output_window.set_img_label(img_label)
+            elif result_image is None:
+                print("Ошибка загрузки изображения")
+
     def fetch_user_groups(self, user_id):
-        global DANGER
         vk_session = vk_api.VkApi(token=access_token)
         vk = vk_session.get_api()
 
@@ -568,6 +570,9 @@ class MainWindow(QWidget):
                     group_names.append(group_info[0]['name'])
                 elif isinstance(item, dict):
                     group_names.append(item.get('name', 'Unknown'))
+            with open('groups.json', 'w', encoding='utf-8') as f:
+                json.dump(group_names, f, ensure_ascii=False, indent=4)
+
 
             # Загрузка списка слов из файла groups.txt
             with open('groups.txt', 'r', encoding='utf-8') as file:
@@ -578,53 +583,48 @@ class MainWindow(QWidget):
                 1 for group_name in group_names if any(word in group_name for word in groups_word_list))
 
             if matching_groups_count >0:
-                DANGER+=0.5
-                print('группа', DANGER)
+                self.DANGER+=1
+                self.ANALYZE += 'У человека есть подписки на провакационные группы \n'
+                #print('группа', self.DANGER)
+
             return matching_groups_count
 
         except Exception as e:
-            print("Error fetching user groups:", e)
+            #print("Error fetching user groups:", e)
             return 0
 
     def fetch_user_wall(self, user_id):
-        self.output_window.set_label_text("")
-        vk_session = vk_api.VkApi(token=access_token)
-        vk = vk_session.get_api()
+        # global DANGER
+        # global ANALYZE
+        # Получение всех постов пользователя
+        all_posts = get_posts(user_id, access_token)
+        user_posts = []
+        repost_posts = []
+        for post in all_posts:
+            if 'copy_history' in post:
+                repost_owner_name, repost_text = get_post_info(post)
+                if repost_owner_name != "Unknown Unknown" and repost_text != "Запись удалена":
+                    repost_posts.append({'repost_owner_name': repost_owner_name, 'repost_text': repost_text})
+            else:
+                post_text = post.get('text', '')
+                if post_text:
+                    user_posts.append(post_text)
 
-        count_per_request = 100
-        total_count = 1000
-        all_posts = []
-        offset = 0
-
-        while offset < total_count:
-            posts = vk.wall.get(owner_id=user_id, count=count_per_request, offset=offset)
-            all_posts.extend(posts['items'])
-            offset += count_per_request
-
-        with open('user_wall.json', 'w', encoding='utf-8') as f:
-            json.dump(all_posts, f, ensure_ascii=False, indent=4)
-
-        self.output_window.set_label_text("Все посты успешно записаны в файл 'user_wall.json'.")
-
-        with open('user_wall.json', 'r', encoding='utf-8') as f:
-            posts_data = json.load(f)
-
-        user_posts_text = []
-
-        for post in posts_data:
-            text = post.get('text', '')
-            user_posts_text.append(text)
-
+        # Сохранение текстов постов пользователя
         with open('user_posts.json', 'w', encoding='utf-8') as f:
-            json.dump(user_posts_text, f, ensure_ascii=False, indent=4)
-
+            json.dump(user_posts, f, ensure_ascii=False, indent=4)
         clean_json('user_posts.json')
         remove_newlines_from_posts('user_posts.json')
-        self.output_window.set_label_text("Все текста постов успешно записаны в файл 'user_posts.json'.")
 
         with open('user_posts.json', 'r', encoding='utf-8') as file:
             data = json.load(file)
+        # Сохранение репостов пользователя
+        with open('repost_posts.json', 'w', encoding='utf-8') as f:
+            json.dump(repost_posts, f, ensure_ascii=False, indent=4)
+        self.output_window.set_label_text("Все текста постов успешно записаны в файл 'user_posts.json'.")
+        print("Все текста постов успешно записаны в файл 'user_posts.json'.")
 
+        #проводим анализ
         model = HuggingFaceModel.Text.Bert_Tiny
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         tr = TextRecognizer(model=model, device=device)
@@ -676,29 +676,36 @@ class MainWindow(QWidget):
 
         # Сбрасываем переменные перед новым запросом
         self.output_window.set_words_label_text("")  # Очищаем текст
-
         with open('user_posts.json', 'r', encoding='utf-8') as file:
             data2 = json.load(file)
+
         emotion_counts = {}
+        total_posts = len(data2)
         model = HuggingFaceModel.Text.Bert_Tiny
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         tr = TextRecognizer(model=model, device=device)
+
         for line in data2:
             result = tr.recognize(line, return_single_label=False)
-            top_emotions = heapq.nlargest(3, result, key=result.get)
-            for emotion in top_emotions:
-                if emotion in emotion_counts:
-                    emotion_counts[emotion] += 1
-                else:
-                    emotion_counts[emotion] = 1
-        print(emotion_counts)
+
+            # Получение вероятностей для каждой эмоции
+            emotions_probabilities = {emotion: result[emotion] for emotion in result}
+
+            # Нахождение наиболее вероятной эмоции
+            top_emotion = max(emotions_probabilities, key=emotions_probabilities.get)
+
+            # Обновление счетчика для наиболее вероятной эмоции
+            if top_emotion in emotion_counts:
+                emotion_counts[top_emotion] += 1
+            else:
+                emotion_counts[top_emotion] = 1
 
         top_emotions = heapq.nlargest(3, emotion_counts, key=emotion_counts.get)
         emot_label_text = ""
         for i, emotion in enumerate(top_emotions, 1):
-            emot_label_text += f"Топ-{i} эмоция: {emotion}, количество вхождений: {emotion_counts[emotion]}\n"
+            emot_label_text += f"Топ-{i} эмоция: {emotion}, количество вхождений: <b>{emotion_counts[emotion]}</b>\n"
 
-        self.output_window.set_emot_label_text(emot_label_text)  # Call the method to update the label text
+        self.output_window.set_emot_label_text(emot_label_text)
 
         negative_words_used = set()
         # Проходимся по всем постам и ищем слова из negative_list.txt
@@ -713,37 +720,32 @@ class MainWindow(QWidget):
 
         #Вычисляем время постов
         posts_activity = get_posts_activity(access_token, user_id)
-        print("Активность пользователя по часам:")
-        for hour, count in sorted(posts_activity.items()):
-            print(f"В {hour} часов (местное время): {count} постов")
+        #print("Активность пользователя по часам:")
+        # for hour, count in sorted(posts_activity.items()):
+        #     print(f"В {hour} часов (местное время): {count} постов")
         max_hour, max_count = posts_activity.most_common(1)[0]
-        print(f"Чаще всего посты появляются в {max_hour} часов: {max_count} постов")
+        #print(f"Чаще всего посты появляются в {max_hour} часов: {max_count} постов")
         self.output_window.set_max_hour_value(f"Чаще всего посты появляются в {max_hour} часов: {max_count} постов")
 
-        # Проверяем наличие постов между 3 и 5 утра. бессоница
+            # Проверяем наличие постов между 3 и 5 утра. бессоница
         insomnia_posts = [(hour, count) for hour, count in posts_activity.items() if 3 <= hour <= 5]
         if insomnia_posts:
             total_insomnia_posts = sum(count for hour, count in insomnia_posts)
-            print(f"У человека существует риск бессоницы, так как количество постов между 3 и 5 утра: {total_insomnia_posts}")
+            self.DANGER+=1
+            #print(f"У человека существует риск бессоницы, так как количество постов между 3 и 5 утра: {total_insomnia_posts}")
+            self.ANALYZE += 'У человека существует риск бессоницы, так как количество постов между 3 и 5 утра'
             self.output_window.set_insomnia_posts(f"У человека существует риск бессоницы, так как количество постов между 3 и 5 утра: {total_insomnia_posts}")
-
-        comments_count = get_avatar_comments_count(vk, user_id)
-        print(f"Количество комментариев под аватаркой: {comments_count}")
-
         #Общий вывод по странице
-        self.output_window.set_result(f'Страница опасна на {DANGER} по 5-балльной шкале')
+        #self.output_window.set_result(f'Страница опасна на {self.DANGER} по 5-балльной шкале')
+        self.output_window.set_analyze(self.ANALYZE)
+        #print(self.ANALYZE)
 
 
-if __name__ == "__main__":
-
-    # import sys
-    # if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-    #     os.environ["PYMORPHY3_DICT_PATH"] = str(pathlib.Path(sys._MEIPASS).joinpath('pymorphy3_dicts_ru/data'))
-
+if __name__ == '__main__':
     app = QApplication(sys.argv)
     font = QFont()
     font.setFamily("Century Gothic")
     app.setFont(font)
-    window = MainWindow()
-    window.show()
+    ex = SignUpApp()
+    ex.show()
     sys.exit(app.exec_())
